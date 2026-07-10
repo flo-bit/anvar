@@ -611,11 +611,8 @@ void initServer()
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (captivePortal(request)) return;
-    if (!showWelcomePage || request->hasArg(F("sliders"))) {
-      handleStaticContent(request, F("/index.htm"), 200, FPSTR(CONTENT_TYPE_HTML), PAGE_index, PAGE_index_length);
-    } else {
-      serveSettings(request);
-    }
+    // custom UI handles first-run onboarding itself (#/setup), stock welcome page is never shown
+    handleStaticContent(request, F("/index.htm"), 200, FPSTR(CONTENT_TYPE_HTML), PAGE_index, PAGE_index_length);
   });
 
 #ifndef WLED_DISABLE_2D
