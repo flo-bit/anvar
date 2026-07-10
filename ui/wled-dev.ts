@@ -188,9 +188,9 @@ function serialPlugin(portSpec: string): Plugin {
 				if (url.pathname !== '/json' && !url.pathname.startsWith('/json/')) return next();
 				const sub = url.pathname.replace(/^\/json\/?/, '');
 
-				if (sub === 'cfg') {
-					console.warn('[wled-dev] /json/cfg is not available over USB serial (state API only)');
-					return reply(res, { error: 'cfg not available over USB serial' }, 501);
+				if (sub === 'cfg' || sub === 'net') {
+					console.warn(`[wled-dev] /json/${sub} is not available over USB serial (state API only)`);
+					return reply(res, { error: `${sub} not available over USB serial` }, 501);
 				}
 
 				if (req.method === 'POST') {
@@ -254,6 +254,17 @@ function mockPlugin(): Plugin {
 	const cfg = {
 		nw: { ins: [{ ssid: process.env.WLED_MOCK_FRESH ? 'Your_Network' : 'MockNet' }] }
 	};
+
+	// like serializeNetworks: first poll starts a "scan" (empty reply), the next
+	// serves results and re-arms, so every fetch cycle behaves like real firmware
+	let scanArmed = false;
+	const MOCK_NETWORKS = [
+		{ ssid: 'MockNet', rssi: -48, bssid: 'AA:00', channel: 6, enc: 3 },
+		{ ssid: 'MockNet', rssi: -70, bssid: 'AA:01', channel: 11, enc: 3 }, // 2nd AP, tests dedupe
+		{ ssid: 'Neighbors 5G', rssi: -62, bssid: 'BB:00', channel: 1, enc: 3 },
+		{ ssid: 'Cafe Guest', rssi: -75, bssid: 'CC:00', channel: 6, enc: 0 },
+		{ ssid: 'FRITZ!Box 7590', rssi: -85, bssid: 'DD:00', channel: 13, enc: 3 }
+	];
 
 	const fullJson = () => ({
 		state,
@@ -325,6 +336,11 @@ function mockPlugin(): Plugin {
 		switch (sub) {
 			case 'cfg':
 				return reply(cfg);
+			case 'net': {
+				const results = scanArmed ? MOCK_NETWORKS : [];
+				scanArmed = !scanArmed;
+				return reply({ networks: results });
+			}
 			case 'state':
 				return reply(state);
 			case 'info':

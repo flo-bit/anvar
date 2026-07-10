@@ -64,6 +64,35 @@ export async function saveWifiAndReboot(ssid: string, psk: string): Promise<bool
 	}
 }
 
+export interface WifiNetwork {
+	ssid: string;
+	rssi: number;
+	enc: number; // 0 = open network
+}
+
+/**
+ * One poll of the WiFi scan (GET /json/net). The firmware returns cached results
+ * and starts a new scan when none are ready — an empty list means "still scanning,
+ * ask again". Returns null when scanning isn't available (e.g. USB serial dev bridge).
+ */
+export async function fetchNetworks(): Promise<WifiNetwork[] | null> {
+	try {
+		const res = await fetch('/json/net');
+		if (!res.ok) return null;
+		const list: WifiNetwork[] = (await res.json()).networks ?? [];
+		// dedupe multi-AP networks by SSID, keep the strongest signal
+		const bySsid: Record<string, WifiNetwork> = {};
+		for (const network of list) {
+			if (!network.ssid) continue;
+			const seen = bySsid[network.ssid];
+			if (!seen || seen.rssi < network.rssi) bySsid[network.ssid] = network;
+		}
+		return Object.values(bySsid).sort((a, b) => b.rssi - a.rssi);
+	} catch {
+		return null;
+	}
+}
+
 /** True once the device answers /json/info again (e.g. after a reboot). */
 export async function deviceReachable(): Promise<boolean> {
 	try {
