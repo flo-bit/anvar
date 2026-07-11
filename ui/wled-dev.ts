@@ -45,6 +45,8 @@ function mockState() {
 		transition: 7,
 		ps: -1,
 		pl: -1,
+		nl: { on: false, dur: 30, mode: 1, tbri: 0, rem: -1 },
+		udpn: { send: true, recv: false },
 		mainseg: 0,
 		seg: [
 			{
@@ -75,6 +77,11 @@ const MOCK_INFO = {
 	leds: { count: 30, pwr: 0, maxpwr: 0 },
 	arch: 'vite-dev-server',
 	ip: '127.0.0.1'
+};
+
+const MOCK_CFG_EXTRAS = {
+	id: { mdns: 'wled-mock', name: 'WLED mock' },
+	hw: { led: { ins: [{ pin: [2] }] } }
 };
 
 function proxyPlugin(host: string): Plugin {
@@ -252,7 +259,8 @@ function mockPlugin(): Plugin {
 	const wss = new WebSocketServer({ noServer: true });
 	// WLED_MOCK_FRESH=1 simulates a factory-fresh device (default SSID → app shows #/setup)
 	const cfg = {
-		nw: { ins: [{ ssid: process.env.WLED_MOCK_FRESH ? 'Your_Network' : 'MockNet' }] }
+		nw: { ins: [{ ssid: process.env.WLED_MOCK_FRESH ? 'Your_Network' : 'MockNet' }] },
+		...MOCK_CFG_EXTRAS
 	};
 
 	// like serializeNetworks: first poll starts a "scan" (empty reply), the next
@@ -285,6 +293,8 @@ function mockPlugin(): Plugin {
 		if (patch.on === 't') state.on = !state.on;
 		else if (typeof patch.on === 'boolean') state.on = patch.on;
 		if (typeof patch.bri === 'number') state.bri = Math.min(255, Math.max(0, patch.bri));
+		if (patch.nl && typeof patch.nl === 'object') Object.assign(state.nl, patch.nl);
+		if (patch.udpn && typeof patch.udpn === 'object') Object.assign(state.udpn, patch.udpn);
 		if (Array.isArray(patch.seg)) {
 			for (const segPatch of patch.seg as Record<string, unknown>[]) {
 				const seg = state.seg[typeof segPatch.id === 'number' ? segPatch.id : 0];
@@ -318,8 +328,13 @@ function mockPlugin(): Plugin {
 					if (sub === 'cfg') {
 						const ssid = patch?.nw?.ins?.[0]?.ssid;
 						if (typeof ssid === 'string') cfg.nw.ins[0].ssid = ssid;
+						const name = patch?.id?.name;
+						if (typeof name === 'string') {
+							cfg.id.name = name;
+							MOCK_INFO.name = name;
+						}
 						console.log(
-							`[wled-mock] cfg updated: ssid=${cfg.nw.ins[0].ssid}${patch.rb ? ' (reboot requested)' : ''}`
+							`[wled-mock] cfg updated: ssid=${cfg.nw.ins[0].ssid} name=${cfg.id.name}${patch.rb ? ' (reboot requested)' : ''}`
 						);
 					} else {
 						applyState(patch);

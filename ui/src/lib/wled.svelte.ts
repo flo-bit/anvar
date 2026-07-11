@@ -19,17 +19,45 @@ export interface WledSegment {
 	col: number[][];
 }
 
+/** Nightlight (state.nl — wled00/json.cpp deserializeState). */
+export interface WledNightlight {
+	on: boolean;
+	/** minutes */
+	dur: number;
+	/** 0 instant, 1 fade, 2 color fade, 3 sunrise */
+	mode: number;
+	/** target brightness */
+	tbri: number;
+}
+
+/** UDP sync (state.udpn). */
+export interface WledSync {
+	send: boolean;
+	recv: boolean;
+}
+
 export interface WledState {
 	on: boolean;
 	bri: number;
+	nl?: WledNightlight;
+	udpn?: WledSync;
 	seg: WledSegment[];
+}
+
+export interface WledInfo {
+	name?: string;
+	ver?: string;
+	ip?: string;
+	leds?: { count?: number };
 }
 
 export type Connection = 'connecting' | 'live' | 'polling' | 'offline';
 
 /** State patch as accepted by deserializeState — everything optional. */
-export type WledStatePatch = Partial<Omit<WledState, 'seg'>> & {
+export type WledStatePatch = Partial<Omit<WledState, 'seg' | 'nl' | 'udpn'>> & {
 	seg?: Partial<WledSegment>[];
+	nl?: Partial<WledNightlight>;
+	udpn?: Partial<WledSync>;
 } & Record<string, unknown>;
 
 /** Factory-default client SSID (DEFAULT_CLIENT_SSID in wled00/const.h) — means "never configured". */
@@ -61,6 +89,31 @@ export async function saveWifiAndReboot(ssid: string, psk: string): Promise<bool
 		return res.ok;
 	} catch {
 		return false;
+	}
+}
+
+export interface CfgDetails {
+	/** mDNS hostname without .local */
+	mdns: string | null;
+	/** first LED output's data GPIO */
+	ledPin: number | null;
+}
+
+/**
+ * Config details the info endpoint doesn't carry. Null when /json/cfg is
+ * unavailable (e.g. USB serial dev bridge) — callers hide those rows.
+ */
+export async function fetchCfgDetails(): Promise<CfgDetails | null> {
+	try {
+		const res = await fetch('/json/cfg');
+		if (!res.ok) return null;
+		const cfg = await res.json();
+		return {
+			mdns: cfg?.id?.mdns ?? null,
+			ledPin: cfg?.hw?.led?.ins?.[0]?.pin?.[0] ?? null
+		};
+	} catch {
+		return null;
 	}
 }
 
@@ -111,6 +164,17 @@ class WledClient {
 	state = $state<WledState | null>(null);
 	effects = $state<string[]>([]);
 	connection = $state<Connection>('connecting');
+	/** Device info (GET /json/info), fetched once at start. */
+	info = $state<WledInfo | null>(null);
+
+	/**
+	 * Liveview seam for preview renderers that show real LED data: refcounted
+	 * so several consumers can share one stream. TODO when a live renderer
+	 * lands: send {"lv":true} on the socket while watchers > 0 and decode the
+	 * binary frames (one RGB triple per LED) into liveColors.
+	 */
+	liveColors = $state<Uint8Array | null>(null);
+	#liveWatchers = 0;
 
 	#ws: WebSocket | null = null;
 	#reconnectDelay = RECONNECT_MIN_MS;
@@ -121,7 +185,17 @@ class WledClient {
 		if (this.#started) return;
 		this.#started = true;
 		this.#fetchEffects();
+		this.#fetchInfo();
 		this.#connect();
+	}
+
+	startLiveview(): void {
+		this.#liveWatchers++;
+	}
+
+	stopLiveview(): void {
+		this.#liveWatchers = Math.max(0, this.#liveWatchers - 1);
+		if (this.#liveWatchers === 0) this.liveColors = null;
 	}
 
 	/** Send a state patch to the device and apply it optimistically. */
@@ -129,8 +203,18 @@ class WledClient {
 		if (this.state) {
 			if (typeof patch.on === 'boolean') this.state.on = patch.on;
 			if (typeof patch.bri === 'number') this.state.bri = patch.bri;
+			if (patch.nl && this.state.nl) Object.assign(this.state.nl, patch.nl);
+			if (patch.udpn && this.state.udpn) Object.assign(this.state.udpn, patch.udpn);
 			const segPatch = patch.seg?.[0];
-			if (segPatch && this.state.seg[0]) Object.assign(this.state.seg[0], segPatch);
+			if (segPatch && this.state.seg[0]) {
+				// col patches are per-slot (like the firmware applies them) — a
+				// primary-only patch must not clobber secondary/tertiary
+				const { col, ...rest } = segPatch;
+				Object.assign(this.state.seg[0], rest);
+				col?.forEach((c, i) => {
+					if (this.state!.seg[0].col) this.state!.seg[0].col[i] = c;
+				});
+			}
 		}
 		if (this.#ws?.readyState === WebSocket.OPEN) {
 			this.#ws.send(JSON.stringify(patch));
@@ -155,12 +239,66 @@ class WledClient {
 		this.setState({ on: true, seg: [{ id: 0, fx }] });
 	}
 
+	/** Set the primary color (seg col slot 0) and make sure the light is on. */
+	setColor(rgb: [number, number, number]): void {
+		this.setState({ on: true, seg: [{ id: 0, col: [rgb] }] });
+	}
+
+	setPalette(pal: number): void {
+		this.setState({ seg: [{ id: 0, pal }] });
+	}
+
+	/** Effect speed, 0–255 (seg.sx). */
+	setSpeed(sx: number): void {
+		this.setState({ seg: [{ id: 0, sx }] });
+	}
+
+	/** Effect intensity, 0–255 (seg.ix). */
+	setIntensity(ix: number): void {
+		this.setState({ seg: [{ id: 0, ix }] });
+	}
+
+	setNightlight(nl: Partial<WledNightlight>): void {
+		this.setState({ nl });
+	}
+
+	setSync(udpn: Partial<WledSync>): void {
+		this.setState({ udpn });
+	}
+
+	/**
+	 * Rename the device (cfg id.name — persisted to flash, applies without
+	 * reboot). Updates the local info copy optimistically.
+	 */
+	async setDeviceName(name: string): Promise<boolean> {
+		try {
+			const res = await fetch('/json/cfg', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id: { name } })
+			});
+			if (res.ok && this.info) this.info.name = name;
+			return res.ok;
+		} catch {
+			return false;
+		}
+	}
+
 	async #fetchEffects(): Promise<void> {
 		try {
 			const res = await fetch('/json/eff');
 			if (res.ok) this.effects = await res.json();
 		} catch {
 			// effect names are cosmetic; retried on next successful connect
+		}
+	}
+
+	async #fetchInfo(): Promise<void> {
+		try {
+			const res = await fetch('/json/info');
+			if (res.ok) this.info = await res.json();
+		} catch {
+			// name is cosmetic; header falls back to "WLED"
 		}
 	}
 

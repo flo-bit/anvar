@@ -9,6 +9,76 @@ See also: `.github/copilot-instructions.md`, `.github/agent-build.instructions.m
 
 Always reference these instructions - including coding guidelines in `docs/` - first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
+<!-- ============ FORK SECTION (anvar) — keep this block on upstream merges ============ -->
+
+# Fork: anvar (flo-bit/anvar)
+
+This is a personal fork of WLED focused on custom wearables (ESP32-C3 + WS2812B). Everything
+below this heading is fork-specific; the upstream guidance further down still applies to
+firmware code. The stock web UI is replaced by a custom Svelte app; the firmware is kept
+as close to upstream as possible.
+
+## Divergences from upstream
+
+- `ui/` — custom UI: SvelteKit (Svelte 5 runes, Tailwind 4, TypeScript, pnpm). Replaces the
+  stock index page only; settings pages, liveview etc. stay stock.
+- `tools/cdata.js` — embeds `ui/build/index.html` (not `wled00/data/index.htm`) into
+  `wled00/html_ui.h`; freshness guard also watches `ui/build/`.
+- Root `package.json` — `npm run build` first builds the UI (`pnpm -C ui build`), then cdata.js.
+- `wled00/wled_server.cpp` — `/` always serves the custom UI; the stock welcome page is never
+  shown (the app handles first-run onboarding itself at `#/setup`).
+- Keep edits to upstream-owned files minimal (currently only the files above) — new features
+  go into `usermods/`, feature removal via build flags in `platformio_override.ini`, never
+  by deleting upstream code.
+
+## Custom UI (ui/)
+
+Single-file build: adapter-static + `output.bundleStrategy: 'inline'` + hash router →
+one self-contained `ui/build/index.html`. **The gzipped page must stay under 64KB**
+(`PAGE_index_length` is `uint16_t`; bump it in `tools/cdata.js` if ever exceeded).
+
+- Routes (hash-based, one served path): `#/` controls, `#/setup` onboarding, `#/settings`.
+- The app talks to the firmware ONLY via the JSON API (`/json/state`, `/json/eff`,
+  `/json/net`, `/json/cfg`, WebSocket `/ws`) and only via relative URLs — the same code must
+  run against the dev mock, the dev proxies, and the device itself.
+- `ui/src/lib/wled.svelte.ts` is the single API client (reactive state + fetch helpers).
+- WiFi is set via `POST /json/cfg {"nw":{"ins":[{ssid,psk}]},"rb":true}` (config is persisted
+  before the reboot fires). Factory-fresh device = cfg SSID equals `Your_Network`.
+
+Commands (run in `ui/`):
+
+| Command | Purpose |
+|---|---|
+| `pnpm dev` | dev server against built-in mock WLED (no hardware) |
+| `WLED_MOCK_FRESH=1 pnpm dev` | mock simulates a factory-fresh device (onboarding flow) |
+| `WLED_HOST=<ip> pnpm dev` | proxy `/json` + `/ws` to a real device over WiFi |
+| `WLED_USB=1 pnpm dev` | bridge to a USB-connected device via serial JSON API |
+| `pnpm check` / `pnpm lint` / `pnpm format` | svelte-check / eslint+prettier / prettier write |
+| `pnpm build` | single-file production build to `ui/build/` |
+
+USB serial dev mode limitations: state API only — `/json/cfg` and `/json/net` return 501
+(WiFi form and network scan need a network transport), and flashing needs the serial port,
+so stop the dev server before `pio run -t upload`.
+
+The dev backend (mock/proxy/USB bridge) lives in `ui/wled-dev.ts`.
+
+## Firmware build & flash (this machine: Apple Silicon macOS)
+
+- `pio` is not on PATH — use `~/.platformio/penv/bin/pio`.
+- **Always build with `-j 2`**: the RISC-V toolchain runs under Rosetta and segfaults
+  (Error -11) at default parallelism.
+- Primary target: `esp32c3dev`. Full cycle:
+  `npm run build && ~/.platformio/penv/bin/pio run -e esp32c3dev -j 2 -t upload`
+- The pio build auto-runs the UI embed (`pio-scripts/build_ui.py` → `npm run build`).
+
+## Git / upstream sync
+
+- `origin` = `flo-bit/anvar` (push here), `upstream` = `wled/WLED` (fetch-only, push URL
+  deliberately DISABLED). Sync: `git fetch upstream && git merge upstream/main`.
+- The user makes commits themselves — prepare changes, don't commit unless asked.
+
+<!-- ============ END FORK SECTION — upstream AGENTS.md continues below ============ -->
+
 ## Build Commands
 
 | Command | Purpose | Timeout |

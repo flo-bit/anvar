@@ -1,2 +1,81 @@
 @import 'tailwindcss';
 @plugin '@tailwindcss/forms';
+
+/* Preview keyframes referenced by name from PreviewAnimation recipes
+   (lib/registry/types.ts) — dynamic animation shorthands need them global. */
+
+/* gradient pans across an oversized background */
+@keyframes panX {
+	0% {
+		background-position: 0% 50%;
+	}
+	100% {
+		background-position: 100% 50%;
+	}
+}
+
+/* repeating stripes march by --march-x per cycle (multiple of the stripe period) */
+@keyframes march {
+	to {
+		background-position: var(--march-x, 504px) 0;
+	}
+}
+
+@keyframes breathe {
+	0%,
+	100% {
+		opacity: 0.3;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+@keyframes flicker {
+	0%,
+	100% {
+		opacity: 0.85;
+	}
+	9% {
+		opacity: 0.62;
+	}
+	21% {
+		opacity: 0.95;
+	}
+	33% {
+		opacity: 0.7;
+	}
+	46% {
+		opacity: 1;
+	}
+	57% {
+		opacity: 0.74;
+	}
+	71% {
+		opacity: 0.93;
+	}
+	86% {
+		opacity: 0.66;
+	}
+}
+
+@keyframes shimmer {
+	0%,
+	100% {
+		opacity: 0.6;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+/* connection dot in the top bar */
+@keyframes ledpulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.35;
+	}
+}
