@@ -48,7 +48,7 @@ export interface WledInfo {
 	name?: string;
 	ver?: string;
 	ip?: string;
-	leds?: { count?: number };
+	leds?: { count?: number; bootps?: number };
 }
 
 export type Connection = 'connecting' | 'live' | 'polling' | 'offline';
@@ -160,6 +160,21 @@ const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
 const POLL_INTERVAL_MS = 3000;
 
+/**
+ * Preset slot for "pick up where I left off": every (debounced) state change
+ * is saved here and cfg def.ps makes the firmware apply it at boot. Slot 250
+ * is the highest valid id — well away from any presets made by hand.
+ */
+const LAST_STATE_PRESET = 250;
+/** Settle time before persisting — also keeps flash writes off the drag path. */
+const PERSIST_DEBOUNCE_MS = 3000;
+const PERSIST_CMD = {
+	psave: LAST_STATE_PRESET,
+	n: 'Last state',
+	ib: true, // include brightness
+	sb: true // include segment bounds
+};
+
 class WledClient {
 	state = $state<WledState | null>(null);
 	effects = $state<string[]>([]);
@@ -180,12 +195,23 @@ class WledClient {
 	#reconnectDelay = RECONNECT_MIN_MS;
 	#pollTimer: ReturnType<typeof setInterval> | null = null;
 	#started = false;
+	#lastPatchAt = 0;
+
+	/**
+	 * The device echoes the full state after every change we send; while the
+	 * user is dragging, stale echoes would fight the optimistic local state
+	 * and make sliders jump. Freshly-patched → ignore pushes briefly.
+	 */
+	#echoGuard(): boolean {
+		return Date.now() - this.#lastPatchAt < 350;
+	}
 
 	start(): void {
 		if (this.#started) return;
 		this.#started = true;
 		this.#fetchEffects();
 		this.#fetchInfo();
+		window.addEventListener('pagehide', () => this.#flushPersist());
 		this.#connect();
 	}
 
@@ -200,6 +226,7 @@ class WledClient {
 
 	/** Send a state patch to the device and apply it optimistically. */
 	setState(patch: WledStatePatch): void {
+		this.#lastPatchAt = Date.now();
 		if (this.state) {
 			if (typeof patch.on === 'boolean') this.state.on = patch.on;
 			if (typeof patch.bri === 'number') this.state.bri = patch.bri;
@@ -216,14 +243,59 @@ class WledClient {
 				});
 			}
 		}
+		this.#send(patch);
+		this.#schedulePersist();
+	}
+
+	#send(payload: object): void {
 		if (this.#ws?.readyState === WebSocket.OPEN) {
-			this.#ws.send(JSON.stringify(patch));
+			this.#ws.send(JSON.stringify(payload));
 		} else {
 			fetch('/json/state', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(patch)
+				body: JSON.stringify(payload)
 			}).catch(() => this.#setDisconnected());
+		}
+	}
+
+	#persistTimer: ReturnType<typeof setTimeout> | null = null;
+	/**
+	 * True while the device's boot preset isn't ours yet (detected from
+	 * info.leds.bootps). The next save then includes "bootps" — savePreset
+	 * applies it and persists cfg, so this works on every transport, including
+	 * the USB serial bridge where /json/cfg doesn't exist. Only sent when
+	 * needed: the bootps key forces a cfg flash write every time.
+	 */
+	#needBootPreset = false;
+
+	#persistCmd(): object {
+		return this.#needBootPreset ? { ...PERSIST_CMD, bootps: LAST_STATE_PRESET } : PERSIST_CMD;
+	}
+
+	#schedulePersist(): void {
+		if (this.#persistTimer) clearTimeout(this.#persistTimer);
+		this.#persistTimer = setTimeout(() => {
+			this.#persistTimer = null;
+			// never persist "off" — a wearable should boot glowing with the
+			// last look, not dark because the last action was power-off
+			if (this.state?.on) {
+				this.#send(this.#persistCmd());
+				this.#needBootPreset = false;
+			}
+		}, PERSIST_DEBOUNCE_MS);
+	}
+
+	/** pagehide: a pending save would be lost — fire it right now. */
+	#flushPersist(): void {
+		if (!this.#persistTimer) return;
+		clearTimeout(this.#persistTimer);
+		this.#persistTimer = null;
+		if (this.state?.on) {
+			navigator.sendBeacon(
+				'/json/state',
+				new Blob([JSON.stringify(this.#persistCmd())], { type: 'application/json' })
+			);
 		}
 	}
 
@@ -233,15 +305,6 @@ class WledClient {
 
 	setBrightness(bri: number): void {
 		this.setState({ bri });
-	}
-
-	setEffect(fx: number): void {
-		this.setState({ on: true, seg: [{ id: 0, fx }] });
-	}
-
-	/** Set the primary color (seg col slot 0) and make sure the light is on. */
-	setColor(rgb: [number, number, number]): void {
-		this.setState({ on: true, seg: [{ id: 0, col: [rgb] }] });
 	}
 
 	setPalette(pal: number): void {
@@ -296,7 +359,10 @@ class WledClient {
 	async #fetchInfo(): Promise<void> {
 		try {
 			const res = await fetch('/json/info');
-			if (res.ok) this.info = await res.json();
+			if (res.ok) {
+				this.info = await res.json();
+				this.#needBootPreset = this.info?.leds?.bootps !== LAST_STATE_PRESET;
+			}
 		} catch {
 			// name is cosmetic; header falls back to "WLED"
 		}
@@ -316,7 +382,7 @@ class WledClient {
 		ws.onmessage = (event) => {
 			try {
 				const msg = JSON.parse(event.data);
-				if (msg.state) this.state = msg.state;
+				if (msg.state && !this.#echoGuard()) this.state = msg.state;
 			} catch {
 				// binary/liveview frames are not used here
 			}
@@ -341,7 +407,8 @@ class WledClient {
 			try {
 				const res = await fetch('/json/state');
 				if (!res.ok) throw new Error(String(res.status));
-				this.state = await res.json();
+				const fresh = await res.json();
+				if (!this.#echoGuard()) this.state = fresh;
 				this.connection = 'polling';
 			} catch {
 				this.connection = 'offline';

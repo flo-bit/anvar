@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { trackDrag } from '$lib/drag';
+	import { rateLimit, trackDrag } from '$lib/drag';
 
 	/**
 	 * Pointer-driven slider (track + knob), 0..max integer values.
@@ -18,14 +18,28 @@
 
 	let { value, max = 255, min = 0, fill, glow, label, onchange }: Props = $props();
 
-	const pct = $derived(((value - min) / (max - min)) * 100);
+	// during a drag the pointer is the source of truth — following `value`
+	// through the device round-trip would make the knob jump
+	let dragValue = $state<number | null>(null);
+	const shown = $derived(dragValue ?? value);
+	const pct = $derived(((shown - min) / (max - min)) * 100);
+
+	const send = rateLimit((v: number) => onchange(v), 80);
 
 	function down(e: PointerEvent) {
 		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		trackDrag(e, (ev) => {
-			const p = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
-			onchange(Math.round(min + p * (max - min)));
-		});
+		trackDrag(
+			e,
+			(ev) => {
+				const p = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+				dragValue = Math.round(min + p * (max - min));
+				send(dragValue);
+			},
+			() => {
+				if (dragValue !== null) send(dragValue);
+				dragValue = null;
+			}
+		);
 	}
 
 	function key(e: KeyboardEvent) {
@@ -46,7 +60,7 @@
 	aria-label={label}
 	aria-valuemin={min}
 	aria-valuemax={max}
-	aria-valuenow={value}
+	aria-valuenow={shown}
 >
 	<div class="relative h-[6px] rounded-[3px] bg-white/10">
 		<div

@@ -1,5 +1,6 @@
 import { wled } from './wled.svelte';
 import { profile } from './registry/profile';
+import type { EffectDef } from './registry/types';
 import { accentCss, accentSoftCss, hsToRgb, hueName, rgbToHs } from './color';
 
 /**
@@ -11,6 +12,12 @@ import { accentCss, accentSoftCss, hsToRgb, hueName, rgbToHs } from './color';
 class Look {
 	/** Remembers the ring position while the device color is gray/white. */
 	#lastHue = $state(28);
+	/**
+	 * Last palette the user picked. seg.pal is per-segment, not per-effect, so
+	 * color effects reset it to 0 (WLED renders from col[0] only when the
+	 * palette is Default) and palette effects restore this choice.
+	 */
+	#lastPalId = $state(profile.palettes[0].palId);
 
 	readonly seg = $derived(wled.state?.seg[0] ?? null);
 	readonly power = $derived(wled.state?.on ?? false);
@@ -46,14 +53,38 @@ class Look {
 
 	setHueSat(hue: number, sat: number): void {
 		this.#lastHue = hue;
-		wled.setColor(hsToRgb(hue, sat));
+		// clear a stray palette so the color actually shows (e.g. set externally)
+		const pal = !this.effect.controls.includes('palette') && this.seg?.pal !== 0 ? { pal: 0 } : {};
+		wled.setState({ on: true, seg: [{ id: 0, col: [hsToRgb(hue, sat)], ...pal }] });
+	}
+
+	setPalette(palId: number): void {
+		this.#lastPalId = palId;
+		wled.setPalette(palId);
+	}
+
+	/** Activate an effect, keeping seg.pal consistent with its control set. */
+	selectEffect(effect: EffectDef): void {
+		let pal: number | undefined;
+		if (!effect.controls.includes('palette')) {
+			pal = 0; // render from col[0]
+		} else {
+			const cur = this.seg?.pal;
+			const curated = profile.palettes.find((p) => p.palId === cur);
+			if (curated) this.#lastPalId = curated.palId;
+			else pal = this.#lastPalId; // e.g. coming from a color effect (pal 0)
+		}
+		wled.setState({
+			on: true,
+			seg: [{ id: 0, fx: effect.fxId, ...(pal !== undefined ? { pal } : {}) }]
+		});
 	}
 
 	/** Step to the previous/next curated effect (wraps around). */
 	stepEffect(dir: 1 | -1): void {
 		const n = profile.effects.length;
 		const next = (this.effectIndex + dir + n) % n;
-		wled.setEffect(profile.effects[next].fxId);
+		this.selectEffect(profile.effects[next]);
 	}
 }
 

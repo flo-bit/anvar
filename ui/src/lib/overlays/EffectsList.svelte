@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import { look } from '$lib/look.svelte';
-	import { wled } from '$lib/wled.svelte';
 	import { profile } from '$lib/registry/profile';
+	import type { EffectDef } from '$lib/registry/types';
 	import Swatch from '$lib/preview/Swatch.svelte';
 
 	interface Props {
@@ -11,8 +11,8 @@
 
 	let { onClose }: Props = $props();
 
-	function pick(fxId: number) {
-		wled.setEffect(fxId);
+	function pick(effect: EffectDef) {
+		look.selectEffect(effect);
 		onClose();
 	}
 </script>
@@ -47,7 +47,7 @@
 			{#each profile.effects as effect (effect.fxId)}
 				{@const selected = effect.fxId === look.effect.fxId}
 				<button
-					onclick={() => pick(effect.fxId)}
+					onclick={() => pick(effect)}
 					class="cursor-pointer rounded-[14px] border p-[11px] text-left transition-colors hover:bg-[#17171d] {selected
 						? 'bg-white/7'
 						: 'bg-white/3'}"

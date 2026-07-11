@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { look } from '$lib/look.svelte';
-	import { wled } from '$lib/wled.svelte';
 	import { profile } from '$lib/registry/profile';
 	import type { PaletteDef } from '$lib/registry/types';
 
@@ -15,7 +14,7 @@
 	{#each profile.palettes as p (p.palId)}
 		{@const selected = p.palId === look.palette.palId}
 		<button
-			onclick={() => wled.setPalette(p.palId)}
+			onclick={() => look.setPalette(p.palId)}
 			class="cursor-pointer rounded-xl border bg-white/4 p-[7px] transition-colors hover:bg-white/9"
 			style:border-color={selected ? look.accent : 'rgba(255,255,255,0.08)'}
 		>

@@ -74,7 +74,7 @@ function mockState() {
 const MOCK_INFO = {
 	ver: 'mock',
 	name: 'WLED mock',
-	leds: { count: 30, pwr: 0, maxpwr: 0 },
+	leds: { count: 30, pwr: 0, maxpwr: 0, bootps: 0 },
 	arch: 'vite-dev-server',
 	ip: '127.0.0.1'
 };
@@ -260,8 +260,11 @@ function mockPlugin(): Plugin {
 	// WLED_MOCK_FRESH=1 simulates a factory-fresh device (default SSID → app shows #/setup)
 	const cfg = {
 		nw: { ins: [{ ssid: process.env.WLED_MOCK_FRESH ? 'Your_Network' : 'MockNet' }] },
+		def: { ps: 0, on: true, bri: 128 },
 		...MOCK_CFG_EXTRAS
 	};
+	// presets saved via {"psave":N} — served at /presets.json like the firmware
+	const presets: Record<number, unknown> = {};
 
 	// like serializeNetworks: first poll starts a "scan" (empty reply), the next
 	// serves results and re-arms, so every fetch cycle behaves like real firmware
@@ -290,6 +293,19 @@ function mockPlugin(): Plugin {
 
 	// Accepts the same JSON as deserializeState (the subset the UI uses).
 	function applyState(patch: Record<string, unknown>): void {
+		if (typeof patch.psave === 'number') {
+			presets[patch.psave] = { n: patch.n ?? `Preset ${patch.psave}`, ...structuredClone(state) };
+			// like savePreset(): a "bootps" key alongside psave updates the boot preset
+			if (typeof patch.bootps === 'number') {
+				cfg.def.ps = patch.bootps;
+				MOCK_INFO.leds.bootps = patch.bootps;
+			}
+			console.log(
+				`[wled-mock] state saved to preset ${patch.psave}` +
+					(typeof patch.bootps === 'number' ? ` (boot preset → ${patch.bootps})` : '')
+			);
+			return;
+		}
 		if (patch.on === 't') state.on = !state.on;
 		else if (typeof patch.on === 'boolean') state.on = patch.on;
 		if (typeof patch.bri === 'number') state.bri = Math.min(255, Math.max(0, patch.bri));
@@ -333,6 +349,7 @@ function mockPlugin(): Plugin {
 							cfg.id.name = name;
 							MOCK_INFO.name = name;
 						}
+						if (patch?.def && typeof patch.def === 'object') Object.assign(cfg.def, patch.def);
 						console.log(
 							`[wled-mock] cfg updated: ssid=${cfg.nw.ins[0].ssid} name=${cfg.id.name}${patch.rb ? ' (reboot requested)' : ''}`
 						);
@@ -383,7 +400,7 @@ function mockPlugin(): Plugin {
 				}
 				if (url.pathname === '/presets.json') {
 					res.setHeader('Content-Type', 'application/json');
-					return res.end('{}');
+					return res.end(JSON.stringify(presets));
 				}
 				next();
 			});

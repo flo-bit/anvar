@@ -36,8 +36,11 @@
 		>
 			{#if look.effect.controls.length > 0}
 				<div class="flex items-stretch">
-					{#each look.effect.controls as kind (kind)}
+					{#each look.effect.controls as kind, i (kind)}
 						{@const Cell = CELLS[kind].cell}
+						{#if i > 0}
+							<div class="mx-1 my-[7px] w-px shrink-0 bg-white/8"></div>
+						{/if}
 						<Cell active={popover === kind} onclick={toggle(kind)} />
 					{/each}
 				</div>
